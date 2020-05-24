@@ -120,10 +120,7 @@ fn main() -> Result<()> {
 
 				let ip: ip::Packet<_> = match buffer.as_packet() {
 					Ok(packet) => packet,
-					Err(err) => {
-						tracing::error!("packet parsing failed: {}", err);
-						continue;
-					}
+					Err(err) => continue
 				};
 
 				if ip.protocol() != Protocol::Icmp {
@@ -133,10 +130,7 @@ fn main() -> Result<()> {
 				let buffer = ip.payload();
 				let icmp: icmp::Packet<_> = match buffer.as_packet() {
 					Ok(packet) => packet,
-					Err(err) => {
-						tracing::error!("packet parsing failed: {}", err);
-						continue;
-					}
+					Err(_) => continue,
 				};
 
 				if let Ok(echo) = icmp.echo() {
