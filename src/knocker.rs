@@ -32,7 +32,6 @@ impl Knocker {
 						.icmp()?.echo()?.request()?
 							.identifier(42)?
 							.sequence(u16::try_from(seq)?)?
-							.payload(b"000000000000")?
 							.build()?))
 				}).collect::<Result<_>>()?
 			}

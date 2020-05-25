@@ -20,12 +20,16 @@ use thiserror::Error;
 use color_eyre::Result;
 use bytes::{BytesMut, BufMut};
 use serde::de::DeserializeOwned;
+use packet::{ip::{Protocol, v4 as ip}, icmp, AsPacket as _, Packet as _};
 use crate::agreement::{self, Agreement};
 
 #[derive(Error, Debug)]
 pub enum ObserverError {
 	#[error("a nonce is being reused")]
 	NonceReused,
+
+	#[error("an invalid packet was received")]
+	InvalidPacket,
 }
 
 type HashMap<K, V> = collections::HashMap<K, V, RandomXxHashBuilder32>;
@@ -47,11 +51,34 @@ impl Observer {
 	}
 
 	#[tracing::instrument(skip(self))]
-	pub fn receive<T>(&mut self, client: IpAddr, data: [u8; 2], ts: Instant) -> Result<Poll<T>>
+	pub fn receive<T>(&mut self, addr: IpAddr, buffer: &[u8], ts: Instant) -> Result<Poll<T>>
 		where T: DeserializeOwned
 	{
-		let session = self.sessions.entry(client).or_insert(BoundedVecDeque::new(agreement::MAX_LENGTH));
-		session.push_back((ts, data));
+		let ip: ip::Packet<_> = buffer.as_packet()
+			.or(Err(ObserverError::InvalidPacket))?;
+
+		if ip.protocol() != Protocol::Icmp {
+			Err(ObserverError::InvalidPacket)?
+		}
+
+		let buffer = ip.payload();
+		let icmp: icmp::Packet<_> = buffer.as_packet()
+			.or(Err(ObserverError::InvalidPacket))?;
+
+		if let Ok(echo) = icmp.echo() {
+			if !echo.is_request() {
+				Err(ObserverError::InvalidPacket)?
+			}
+		}
+		else {
+			Err(ObserverError::InvalidPacket)?
+		}
+
+		let mut fragment = [0u8; 2];
+		(&mut fragment[..]).put_u16(ip.id());
+
+		let session = self.sessions.entry(addr).or_insert(BoundedVecDeque::new(agreement::MAX_LENGTH));
+		session.push_back((ts, fragment));
 
 		// TODO(meh): evict expired packets from the session
 

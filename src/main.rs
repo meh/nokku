@@ -12,17 +12,14 @@
 //
 //  0. You just DO WHAT THE FUCK YOU WANT TO.
 
-use std::{time::{Duration, Instant}, net::IpAddr, io, convert::TryInto, thread, task::Poll};
+use std::{time::{Duration, Instant}, net::{SocketAddr, IpAddr}, io, convert::TryInto, thread, task::Poll};
 use indicatif::{ProgressBar, ProgressStyle};
 use clap::Clap;
 use color_eyre::Result;
 use thiserror::Error;
 use serde::{Serialize, Deserialize};
-use bytes::BufMut;
-use packet::{ip::{Protocol, v4 as ip}, icmp, AsPacket as _, Packet as _};
 use tracing;
 use socket::Socket;
-use smol::Async;
 
 #[derive(Clap, Debug)]
 struct Args {
@@ -101,72 +98,49 @@ struct OpenPort {
 	duration: u8,
 }
 
-#[smol_potat::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
 	tracing_subscriber::fmt::init();
 	color_backtrace::install();
 	let args = Args::parse();
 
 	match args.command {
 		Command::Observe { interface, private_key, public_key } => {
-			let socket = socket(interface.as_ref().map(AsRef::as_ref))?;
+			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_ICMP.into())?;
 			let mut observer = Observer::new(Agreement::new(&private_key, &public_key)?);
 
 			loop {
 				let mut buffer = [0u8; 1500];
-				let (size, addr) = socket.recv_from(&mut buffer).await?;
+				let (size, addr) = socket.recv_from(&mut buffer)?;
 				let buffer = &buffer[..size];
 
-				dbg!(buffer, addr);
+				match observer.receive::<OpenPort>(addr.as_std().unwrap().ip(), buffer, Instant::now()) {
+					Ok(Poll::Pending) => (),
 
-				let ip: ip::Packet<_> = match buffer.as_packet() {
-					Ok(packet) => packet,
-					Err(_) => continue
-				};
-
-				if ip.protocol() != Protocol::Icmp {
-					continue;
-				}
-
-				let buffer = ip.payload();
-				let icmp: icmp::Packet<_> = match buffer.as_packet() {
-					Ok(packet) => packet,
-					Err(_) => continue,
-				};
-
-				if let Ok(echo) = icmp.echo() {
-					if !echo.is_request() {
-						continue;
+					Ok(Poll::Ready(request)) => {
+						tracing::debug!(?request);
 					}
 
-					let mut data = [0u8; 2];
-					(&mut data[..]).put_u16(echo.identifier());
-
-					match observer.receive::<OpenPort>(ip.source().into(), data, Instant::now()) {
-						Ok(Poll::Pending) => (),
-
-						Ok(Poll::Ready(request)) => {
-							tracing::debug!(?request);
-						}
-
-						Err(err) if err.is::<ObserverError>() => {
-							match err.downcast_ref::<ObserverError>().unwrap() {
-								ObserverError::NonceReused => {
-									todo!("send a double reply to mark to retry");
-								}
+					Err(err) if err.is::<ObserverError>() => {
+						match err.downcast_ref::<ObserverError>().unwrap() {
+							ObserverError::NonceReused => {
+								todo!("send a double reply to mark to retry");
 							}
+
+							ObserverError::InvalidPacket =>
+								continue
 						}
-						
-						Err(err) => {
-							tracing::error!("packet parsing failed: {}", err);
-						}
+					}
+
+					Err(err) => {
+						tracing::error!("packet parsing failed: {}", err);
 					}
 				}
 			}
 		}
 
 		Command::Knock { interface, private_key, public_key, host, port, duration } => {
-			let socket = socket(interface.as_ref().map(AsRef::as_ref))?;
+			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_RAW.into())?;
+			let addr: SocketAddr = (host, 0).into();
 			let knocker = Knocker::new(Agreement::new(&private_key, &public_key)?);
 			let packets = knocker.send(&OpenPort { port, duration }, host)?;
 			let progress = ProgressBar::new(packets.len().try_into()?)
@@ -176,7 +150,7 @@ async fn main() -> Result<()> {
 			progress.set_message("Sending ICMP packets");
 
 			for packet in packets {
-				socket.send_to(&packet, (host, 0)).await?;
+				socket.send_to(&packet, &addr.into())?;
 				progress.inc(1);
 				thread::sleep(Duration::from_secs(1));
 			}
@@ -204,7 +178,7 @@ async fn main() -> Result<()> {
 	Ok(())
 }
 
-fn socket(interface: Option<&str>) -> Result<Async<Socket>> {
+fn socket(interface: Option<&str>, protocol: socket::Protocol) -> Result<Socket> {
 	use std::{ffi::CString, os::unix::io::AsRawFd};
 
 	let interface = if let Some(interface) = interface {
@@ -216,8 +190,7 @@ fn socket(interface: Option<&str>) -> Result<Async<Socket>> {
 			.find(|iface| !iface.is_loopback())
 	};
 
-	let socket = Socket::new(socket::Domain::ipv4(), socket::Type::raw(),
-		Some(libc::IPPROTO_RAW.into()))?;
+	let socket = Socket::new(socket::Domain::ipv4(), socket::Type::raw(), Some(protocol))?;
 
 	if let Some(interface) = interface {
 		unsafe {
@@ -231,5 +204,5 @@ fn socket(interface: Option<&str>) -> Result<Async<Socket>> {
 		}
 	}
 
-	Ok(Async::new(socket)?)
+	Ok(socket)
 }

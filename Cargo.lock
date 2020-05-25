@@ -758,7 +758,7 @@ dependencies = [
  "phf_codegen",
  "regex",
  "reqwest",
- "smol 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)",
+ "smol",
  "smol-potat",
  "url",
 ]
@@ -1043,8 +1043,6 @@ dependencies = [
  "rand",
  "serde",
  "sha2",
- "smol 0.1.10 (git+https://github.com/meh/smol?branch=socket-async)",
- "smol-potat",
  "socket2",
  "thiserror",
  "tracing",
@@ -1149,6 +1147,8 @@ checksum = "06de47b848347d8c4c94219ad8ecd35eb90231704b067e67e6ae2e36ee023510"
 [[package]]
 name = "packet"
 version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f6d388ce0e344fdb4f0bd5a39c603f7c327a859c111c825a140cb54dd993e9e"
 dependencies = [
  "bitflags",
  "byteorder",
@@ -1598,24 +1598,6 @@ checksum = "c7cb5678e1615754284ec264d9bb5b4c27d2018577fd90ac0ceb578591ed5ee4"
 [[package]]
 name = "smol"
 version = "0.1.10"
-source = "git+https://github.com/meh/smol?branch=socket-async#b8cd5f04c877177423d43cbc43cffe0215bc3356"
-dependencies = [
- "async-task",
- "crossbeam",
- "futures-io",
- "futures-util",
- "nix",
- "once_cell",
- "piper",
- "scoped-tls-hkt",
- "slab",
- "socket2",
- "wepoll-binding",
-]
-
-[[package]]
-name = "smol"
-version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "686c634ad1873fffef6aed20f180eede424fbf3bb31802394c90fd7335a661b7"
 dependencies = [
@@ -1639,7 +1621,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "888b677843b4a1a51d23aac1cda71fd3c365bd6bcf6b124653f9dad766c4990a"
 dependencies = [
  "num_cpus",
- "smol 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)",
+ "smol",
  "smol-potat-derive",
 ]
 
