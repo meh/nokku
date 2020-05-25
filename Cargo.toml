@@ -17,9 +17,15 @@ tracing = "0.1"
 tracing-futures = "0.2"
 tracing-subscriber = "0.2"
 pretty-hex = "0.1"
+indicatif = "0.14"
 
+futures = "0.3"
+smol = { version = "0.1", git = "https://github.com/meh/smol", branch = "socket-async" }
+smol-potat = { version = "0.3", features = ["auto"] }
+socket = { package = "socket2", version = "0.3" }
 packet = { version = "0.1", path = "../packet" }
-datalink = { package = "pnet_datalink", version = "0.26" }
+get_if_addrs = "0.5"
+libc = "0.2"
 
 serde = { version = "1", features = ["derive"] }
 bincode = "1"

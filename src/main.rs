@@ -13,14 +13,16 @@
 //  0. You just DO WHAT THE FUCK YOU WANT TO.
 
 use std::{time::{Duration, Instant}, net::IpAddr, io, convert::TryInto, thread, task::Poll};
+use indicatif::{ProgressBar, ProgressStyle};
 use clap::Clap;
 use color_eyre::Result;
 use thiserror::Error;
-use datalink::Channel::Ethernet;
 use serde::{Serialize, Deserialize};
 use bytes::BufMut;
 use packet::{ip::{Protocol, v4 as ip}, icmp, AsPacket as _, Packet as _};
 use tracing;
+use socket::Socket;
+use smol::Async;
 
 #[derive(Clap, Debug)]
 struct Args {
@@ -80,8 +82,8 @@ pub enum MainError {
 	#[error("no valid interface could be found")]
 	InvalidInterface,
 
-	#[error("no valid channel could be found")]
-	InvalidChannel,
+	#[error("no valid socket was able to be created")]
+	InvalidSocket,
 }
 
 mod agreement;
@@ -99,28 +101,27 @@ struct OpenPort {
 	duration: u8,
 }
 
-fn main() -> Result<()> {
+#[smol_potat::main]
+async fn main() -> Result<()> {
 	tracing_subscriber::fmt::init();
 	color_backtrace::install();
 	let args = Args::parse();
 
 	match args.command {
 		Command::Observe { interface, private_key, public_key } => {
-			let (_iff, (mut tx, mut rx)) = channel(interface.as_ref())?;
+			let socket = socket(interface.as_ref().map(AsRef::as_ref))?;
 			let mut observer = Observer::new(Agreement::new(&private_key, &public_key)?);
 
 			loop {
-				let buffer = match rx.next() {
-					Ok(buffer) => buffer,
-					Err(err) => {
-						tracing::error!("packet reception failed: {}", err);
-						continue;
-					}
-				};
+				let mut buffer = [0u8; 1500];
+				let (size, addr) = socket.recv_from(&mut buffer).await?;
+				let buffer = &buffer[..size];
+
+				dbg!(buffer, addr);
 
 				let ip: ip::Packet<_> = match buffer.as_packet() {
 					Ok(packet) => packet,
-					Err(err) => continue
+					Err(_) => continue
 				};
 
 				if ip.protocol() != Protocol::Icmp {
@@ -139,7 +140,7 @@ fn main() -> Result<()> {
 					}
 
 					let mut data = [0u8; 2];
-					(&mut data[..]).put_u16(ip.id());
+					(&mut data[..]).put_u16(echo.identifier());
 
 					match observer.receive::<OpenPort>(ip.source().into(), data, Instant::now()) {
 						Ok(Poll::Pending) => (),
@@ -165,15 +166,22 @@ fn main() -> Result<()> {
 		}
 
 		Command::Knock { interface, private_key, public_key, host, port, duration } => {
-			let (iff, (mut tx, _rx)) = channel(interface.as_ref())?;
-			let knocker = Knocker::new(Agreement::new(&private_key, &public_key)?,
-				iff.ips[0].ip(), host);
+			let socket = socket(interface.as_ref().map(AsRef::as_ref))?;
+			let knocker = Knocker::new(Agreement::new(&private_key, &public_key)?);
+			let packets = knocker.send(&OpenPort { port, duration }, host)?;
+			let progress = ProgressBar::new(packets.len().try_into()?)
+				.with_style(ProgressStyle::default_bar()
+					.template("[{elapsed_precise}] {bar:40.red/darkgray} {pos:>7}/{len:7} {msg}"));
 
-			let packets = knocker.send(&OpenPort { port, duration })?;
+			progress.set_message("Sending ICMP packets");
+
 			for packet in packets {
+				socket.send_to(&packet, (host, 0)).await?;
+				progress.inc(1);
 				thread::sleep(Duration::from_secs(1));
-				tx.send_to(packet.as_ref(), None);
 			}
+
+			progress.finish_with_message("Done!");
 		}
 
 		Command::GenKey => {
@@ -196,18 +204,32 @@ fn main() -> Result<()> {
 	Ok(())
 }
 
-fn channel(name: Option<&String>) -> Result<(datalink::NetworkInterface, (Box<dyn datalink::DataLinkSender>, Box<dyn datalink::DataLinkReceiver>))> {
-	let interface = datalink::interfaces().into_iter()
-		.filter(|e| e.is_up() && !e.is_loopback() && e.ips.len() > 0 &&
-			Some(&e.name) == name)
-		.next().ok_or(MainError::InvalidInterface)?;
+fn socket(interface: Option<&str>) -> Result<Async<Socket>> {
+	use std::{ffi::CString, os::unix::io::AsRawFd};
 
-	if let Ethernet(tx, rx) = datalink::channel(&interface, Default::default())? {
-		tracing::debug!("got interface\n{}", interface);
-
-		Ok((interface, (tx, rx)))
+	let interface = if let Some(interface) = interface {
+		get_if_addrs::get_if_addrs()?.into_iter()
+			.find(|iface| iface.name == interface)
 	}
 	else {
-		Err(MainError::InvalidChannel)?
+		get_if_addrs::get_if_addrs()?.into_iter()
+			.find(|iface| !iface.is_loopback())
+	};
+
+	let socket = Socket::new(socket::Domain::ipv4(), socket::Type::raw(),
+		Some(libc::IPPROTO_RAW.into()))?;
+
+	if let Some(interface) = interface {
+		unsafe {
+			let interface: CString = CString::new(interface.name)?;
+
+			if libc::setsockopt(socket.as_raw_fd(), libc::SOL_SOCKET, libc::SO_BINDTODEVICE,
+				interface.as_ptr() as *const _, interface.as_bytes_with_nul().len() as libc::socklen_t) < 0
+			{
+				Err(MainError::InvalidSocket)?
+			}
+		}
 	}
+
+	Ok(Async::new(socket)?)
 }

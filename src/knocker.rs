@@ -1,52 +1,38 @@
 use std::{collections::VecDeque, net::IpAddr, convert::TryFrom};
 use color_eyre::Result;
-use thiserror::Error;
 use serde::Serialize;
-use packet::{ip::v4 as ip, icmp::echo, Packet as _, Builder as _};
+use packet::{ip::v4 as ip, Builder as _};
 use bytes::{Buf, Bytes};
 use crate::agreement::Agreement;
 
 pub struct Knocker {
 	agreement: Agreement,
-
-	src: IpAddr,
-	dest: IpAddr,
-}
-
-#[derive(Error, Debug)]
-pub enum KnockerError {
-	#[error("the source and destination addresses are not the same type")]
-	MismatchedAddresses,
 }
 
 impl Knocker {
-	pub fn new(agreement: Agreement, src: IpAddr, dest: IpAddr) -> Self {
-		Knocker { agreement, src, dest }
+	pub fn new(agreement: Agreement) -> Self {
+		Knocker { agreement }
 	}
 
-	pub fn send<T>(&self, value: &T) -> Result<VecDeque<Bytes>>
+	pub fn send<T>(&self, value: &T, dest: IpAddr) -> Result<VecDeque<Bytes>>
 		where T: Serialize
 	{
 		let encoded = self.agreement.encode(Bytes::from(bincode::serialize(value)?))?;
 
-		let packets = match self.src {
-			IpAddr::V4(src) => {
-				let dest = match self.dest {
-					IpAddr::V4(dest) => dest,
-					IpAddr::V6(_) => Err(KnockerError::MismatchedAddresses)?,
-				};
-
+		let packets = match dest {
+			IpAddr::V4(dest) => {
 				// TODO(meh): reproduce iputils behavior for maximum stealth
 
 				encoded.as_ref().chunks(2).enumerate().map(|(seq, mut b)| {
 					Ok(Bytes::from(ip::Builder::default()
 						.id(b.get_u16())?
 						.ttl(64)?
-						.source(src)?
+						.source([0, 0, 0, 0].into())?
 						.destination(dest)?
 						.icmp()?.echo()?.request()?
 							.identifier(42)?
 							.sequence(u16::try_from(seq)?)?
+							.payload(b"000000000000")?
 							.build()?))
 				}).collect::<Result<_>>()?
 			}
