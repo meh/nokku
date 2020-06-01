@@ -12,14 +12,22 @@
 //
 //  0. You just DO WHAT THE FUCK YOU WANT TO.
 
-use std::{time::{Duration, Instant}, net::{SocketAddr, IpAddr}, io, convert::TryInto, thread, task::Poll};
+use std::{time::{Duration, Instant}, net::{SocketAddr, IpAddr}, io, convert::TryInto, thread, task::Poll, time::SystemTime};
 use indicatif::{ProgressBar, ProgressStyle};
 use clap::Clap;
 use color_eyre::Result;
 use thiserror::Error;
-use serde::{Serialize, Deserialize};
 use tracing;
 use socket::Socket;
+
+mod agreement;
+mod command;
+mod observer;
+mod knocker;
+
+use agreement::Agreement;
+use observer::{Observer, ObserverError};
+use knocker::Knocker;
 
 #[derive(Clap, Debug)]
 struct Args {
@@ -35,11 +43,11 @@ enum Command {
 		interface: Option<String>,
 
 		/// The public key of the client.
-		#[clap(required = true, short = "P", long)]
+		#[clap(required = true, short = "P", long, env)]
 		public_key: String,
 
 		/// The observer's private key.
-		#[clap(required = true, short = "p", long)]
+		#[clap(required = true, short = "p", long, env)]
 		private_key: String,
 	},
 
@@ -49,22 +57,19 @@ enum Command {
 		interface: Option<String>,
 
 		/// The public key of the observer.
-		#[clap(required = true, short = "P", long)]
+		#[clap(required = true, short = "P", long, env)]
 		public_key: String,
 
 		/// Your private key.
-		#[clap(required = true, short = "p", long)]
+		#[clap(required = true, short = "p", long, env)]
 		private_key: String,
 
-		/// Duration to keep the port open for in minutes.
-		#[clap(default_value = "1", short, long)]
-		duration: u8,
-
 		/// The host of the observer.
+		#[clap(env)]
 		host: IpAddr,
 
-		/// The port to open.
-		port: u16,
+		#[clap(subcommand)]
+		command: command::Command,
 	},
 
 	/// Generate a private key.
@@ -83,21 +88,6 @@ pub enum MainError {
 	InvalidSocket,
 }
 
-mod agreement;
-use agreement::Agreement;
-
-mod observer;
-use observer::{Observer, ObserverError};
-
-mod knocker;
-use knocker::Knocker;
-
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
-struct OpenPort {
-	port: u16,
-	duration: u8,
-}
-
 fn main() -> Result<()> {
 	tracing_subscriber::fmt::init();
 	color_backtrace::install();
@@ -113,7 +103,7 @@ fn main() -> Result<()> {
 				let (size, addr) = socket.recv_from(&mut buffer)?;
 				let buffer = &buffer[..size];
 
-				match observer.receive::<OpenPort>(addr.as_std().unwrap().ip(), buffer, Instant::now()) {
+				match observer.receive::<command::Command>(addr.as_std().unwrap().ip(), buffer, Instant::now()) {
 					Ok(Poll::Pending) => (),
 
 					Ok(Poll::Ready(request)) => {
@@ -138,18 +128,18 @@ fn main() -> Result<()> {
 			}
 		}
 
-		Command::Knock { interface, private_key, public_key, host, port, duration } => {
+		Command::Knock { interface, private_key, public_key, host, command } => {
 			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_RAW.into())?;
 			let addr: SocketAddr = (host, 0).into();
 			let knocker = Knocker::new(Agreement::new(&private_key, &public_key)?);
-			let packets = knocker.send(&OpenPort { port, duration }, host)?;
-			let progress = ProgressBar::new(packets.len().try_into()?)
+			let mut packets = knocker.command(&command, host)?;
+			let progress = ProgressBar::new(packets.remaining().try_into()?)
 				.with_style(ProgressStyle::default_bar()
-					.template("[{elapsed_precise}] {bar:40.red/darkgray} {pos:>7}/{len:7} {msg}"));
+					.template("[{elapsed_precise}] {bar:40.red/darkgray} {pos:>7}/{len:7}"));
 
-			progress.set_message("Sending ICMP packets");
+			progress.println(format!("Sending ICMP packets to {}", addr.ip()));
 
-			for packet in packets {
+			while let Some(packet) = packets.next(SystemTime::now()) {
 				socket.send_to(&packet, &addr.into())?;
 				progress.inc(1);
 				thread::sleep(Duration::from_secs(1));
