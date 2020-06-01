@@ -51,12 +51,21 @@ pub struct Payload {
 	pub data: Bytes,
 }
 
+#[derive(Debug)]
+struct DerivedKeys {
+	length: u8,
+	cookie: u16,
+	aead: GenericArray<u8, N::U32>,
+	nonce: GenericArray<u8, N::U12>,
+}
+
 pub const NONCE_LENGTH: usize = 4;
+pub const PUBKEY_LENGTH: usize = 32;
 pub const HEADER_LENGTH: usize = 2 + 1;
 pub const MAC_LENGTH: usize = 16;
 
 pub const MIN_LENGTH: usize = NONCE_LENGTH + HEADER_LENGTH + MAC_LENGTH;
-pub const MAX_LENGTH: usize = NONCE_LENGTH + HEADER_LENGTH + MAC_LENGTH + u8::MAX as usize;
+pub const MAX_LENGTH: usize = PUBKEY_LENGTH + HEADER_LENGTH + MAC_LENGTH + u8::MAX as usize;
 
 pub const COOKIE: u16 = 0x1337;
 
@@ -79,14 +88,21 @@ impl Agreement {
 		})
 	}
 
-	fn derive(&self, nonce: Option<&[u8]>) -> (u8, GenericArray<u8, N::U32>, GenericArray<u8, N::U12>) {
+	fn derive(&self, nonce: Option<&[u8]>) -> DerivedKeys {
 		let key = Hkdf::<Sha512>::extract(nonce, self.secret.as_bytes()).0;
+		let rest = key.as_slice();
 
-		let (length, rest) = key.as_slice().split_at(1);
+		let (length, rest) = rest.split_at(1);
+		let (mut cookie, rest) = rest.split_at(2);
 		let (aead, rest) = rest.split_at(32);
 		let (nonce, _rest) = rest.split_at(12);
 
-		(length[0], GenericArray::clone_from_slice(aead), GenericArray::clone_from_slice(nonce))
+		DerivedKeys {
+			length: length[0],
+			cookie: cookie.get_u16(),
+			aead: GenericArray::clone_from_slice(aead),
+			nonce: GenericArray::clone_from_slice(nonce),
+		}
 	}
 
 	pub fn decode(&self, mut buffer: Bytes) -> Result<Poll<(Payload, Bytes)>> {
@@ -97,25 +113,22 @@ impl Agreement {
 		let session: [u8; 4] = (&buffer[..4]).try_into()?;
 		let keys = self.derive(Some(&session[..]));
 
-		// The length is encrypted as well to not have a constant part in the
-		// stream that would make it obvious something is happening.
-		let length   = buffer[4] ^ keys.0;
-		let payload  = length as usize + 2 + <ChaCha20Poly1305 as Aead>::TagSize::to_usize();
-		let mut data = buffer.split_off(5);
+		let cookie = buffer.get_u16() ^ keys.cookie;
+		if cookie != COOKIE {
+			Err(AgreementError::InvalidCookie)?
+		}
 
-		if data.len() < payload {
+		let length = buffer.get_u8() ^ keys.length;
+		let length  = usize::from(length) + <ChaCha20Poly1305 as Aead>::TagSize::to_usize();
+
+		if buffer.len() < length {
 			return Ok(Poll::Pending);
 		}
 
-		let rest = data.split_off(payload);
-
-		let mut plaintext = Bytes::from(ChaCha20Poly1305::new(keys.1)
-			.decrypt(&keys.2, aead::Payload { msg: data.as_ref(), aad: &session })
+		let rest      = buffer.split_off(length);
+		let plaintext = Bytes::from(ChaCha20Poly1305::new(keys.aead)
+			.decrypt(&keys.nonce, aead::Payload { msg: buffer.as_ref(), aad: &session })
 			.or(Err(AgreementError::DecryptionFailed))?);
-
-		if plaintext.get_u16() != COOKIE {
-			Err(AgreementError::InvalidCookie)?
-		}
 
 		Ok(Poll::Ready((Payload { session, data: plaintext }, rest)))
 	}
@@ -128,14 +141,12 @@ impl Agreement {
 
 		let length = u8::try_from(value.len()).or(Err(AgreementError::PayloadTooLong))?;
 		encoded.put(&session[..]);
-		encoded.put_u8(length ^ keys.0);
 
-		let mut plaintext = BytesMut::new();
-		plaintext.put_u16(0x1337);
-		plaintext.put(value.as_ref());
+		encoded.put_u16(COOKIE ^ keys.cookie);
+		encoded.put_u8(length ^ keys.length);
 
-		encoded.put(ChaCha20Poly1305::new(keys.1)
-			.encrypt(&keys.2, aead::Payload { msg: &plaintext, aad: &session })
+		encoded.put(ChaCha20Poly1305::new(keys.aead)
+			.encrypt(&keys.nonce, aead::Payload { msg: &value, aad: &session })
 			.or(Err(AgreementError::EncryptionFailed))?
 			.as_ref());
 
