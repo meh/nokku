@@ -12,7 +12,7 @@
 //
 //  0. You just DO WHAT THE FUCK YOU WANT TO.
 
-use std::{task::Poll, convert::{TryInto, TryFrom}};
+use std::{task::Poll, convert::{TryInto, TryFrom}, fs, path::Path};
 use color_eyre::Result;
 use base64;
 use rand::prelude::*;
@@ -71,8 +71,22 @@ pub const COOKIE: u16 = 0x1337;
 
 impl Agreement {
 	pub fn new(me: &str, peer: &str) -> Result<Self> {
-		let private_key = base64::decode_config(me, base64::CRYPT)?;
-		let public_key = base64::decode_config(peer, base64::CRYPT)?;
+		let me = if Path::new(me).exists() {
+			fs::read_to_string(me)?
+		}
+		else {
+			me.to_owned()
+		};
+
+		let peer = if Path::new(peer).exists() {
+			fs::read_to_string(peer)?
+		}
+		else {
+			peer.to_owned()
+		};
+
+		let private_key = base64::decode_config(me.trim(), base64::CRYPT)?;
+		let public_key = base64::decode_config(peer.trim(), base64::CRYPT)?;
 
 		let private_key: [u8; 32] = private_key.as_slice().try_into()?;
 		let public_key: [u8; 32] = public_key.as_slice().try_into()?;
