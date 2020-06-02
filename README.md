@@ -12,14 +12,16 @@ Then on both sides create a Curve25519 keypair:
 $ nokku gen-key | tee nokku.priv | nokku pub-key > nokku.pub
 ```
 
-Then on the server (as root) after sending the public key of the client:
+Examples
+--------
+On the server (as root) after saving the public key of the client:
 ```bash
 # In this example the client's public key is a file named `client.pub` and the
 # interface to observe on is `eth0`.
 nokku observe -p nokku.priv -P client.pub -i eth0
 ```
 
-Once the server is listening, on the client (again, as root), after sending the
+Once the server is listening, on the client (again, as root), after saving the
 public key of the server, you can open a port for 10 minutes by doing:
 ```bash
 # In this example the server's public key is a file named `server.pub` and the
