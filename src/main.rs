@@ -70,6 +70,10 @@ enum Command {
 		#[clap(long, env, parse(from_occurrences))]
 		padding: u8,
 
+		/// Number of milliseconds to wait between each packet.
+		#[clap(default_value = "1000", long, env)]
+		interval: u16,
+
 		/// The host of the observer.
 		#[clap(env)]
 		host: IpAddr,
@@ -136,7 +140,11 @@ fn main() -> Result<()> {
 			}
 		}
 
-		Command::Knock { interface, private_key, public_key, padding, host, command } => {
+		Command::Knock {
+			interval, padding,
+			interface, private_key, public_key,
+			host, command
+		} => {
 			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_RAW.into())?;
 			let addr: SocketAddr = (host, 0).into();
 			let knocker = Knocker::new(Agreement::new(&private_key, &public_key)?);
@@ -154,7 +162,7 @@ fn main() -> Result<()> {
 				while let Some(packet) = packets.next(SystemTime::now()) {
 					socket.send_to(&packet, &addr.into())?;
 					progress.inc(1);
-					thread::sleep(Duration::from_secs(1));
+					thread::sleep(Duration::from_millis(interval.into()));
 				}
 
 				progress.finish_with_message("Done!");
@@ -176,7 +184,7 @@ fn main() -> Result<()> {
 				for _ in 0 .. length {
 					socket.send_to(&packets.padding(SystemTime::now()), &addr.into())?;
 					progress.inc(1);
-					thread::sleep(Duration::from_secs(1));
+					thread::sleep(Duration::from_millis(interval.into()));
 				}
 
 				progress.finish_with_message("Done!");
