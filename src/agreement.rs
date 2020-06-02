@@ -53,8 +53,8 @@ pub struct Payload {
 
 #[derive(Debug)]
 struct DerivedKeys {
-	length: u8,
 	cookie: u16,
+	length: u8,
 	aead: GenericArray<u8, N::U32>,
 	nonce: GenericArray<u8, N::U12>,
 }
@@ -92,14 +92,14 @@ impl Agreement {
 		let key = Hkdf::<Sha512>::extract(nonce, self.secret.as_bytes()).0;
 		let rest = key.as_slice();
 
-		let (length, rest) = rest.split_at(1);
 		let (mut cookie, rest) = rest.split_at(2);
+		let (length, rest) = rest.split_at(1);
 		let (aead, rest) = rest.split_at(32);
 		let (nonce, _rest) = rest.split_at(12);
 
 		DerivedKeys {
-			length: length[0],
 			cookie: cookie.get_u16(),
+			length: length[0],
 			aead: GenericArray::clone_from_slice(aead),
 			nonce: GenericArray::clone_from_slice(nonce),
 		}
@@ -110,7 +110,7 @@ impl Agreement {
 			return Ok(Poll::Pending);
 		}
 
-		let session: [u8; 4] = (&buffer[..4]).try_into()?;
+		let session: [u8; 4] = buffer.split_to(4).as_ref().try_into().unwrap();
 		let keys = self.derive(Some(&session[..]));
 
 		let cookie = buffer.get_u16() ^ keys.cookie;
@@ -119,13 +119,13 @@ impl Agreement {
 		}
 
 		let length = buffer.get_u8() ^ keys.length;
-		let length  = usize::from(length) + <ChaCha20Poly1305 as Aead>::TagSize::to_usize();
+		let needed = usize::from(length) + <ChaCha20Poly1305 as Aead>::TagSize::to_usize();
 
-		if buffer.len() < length {
+		if buffer.len() < needed {
 			return Ok(Poll::Pending);
 		}
 
-		let rest      = buffer.split_off(length);
+		let rest      = buffer.split_off(needed);
 		let plaintext = Bytes::from(ChaCha20Poly1305::new(keys.aead)
 			.decrypt(&keys.nonce, aead::Payload { msg: buffer.as_ref(), aad: &session })
 			.or(Err(AgreementError::DecryptionFailed))?);
@@ -139,9 +139,10 @@ impl Agreement {
 		let session: [u8; 4] = rand::thread_rng().gen();
 		let keys = self.derive(Some(&session[..]));
 
-		let length = u8::try_from(value.len()).or(Err(AgreementError::PayloadTooLong))?;
-		encoded.put(&session[..]);
+		let length = u8::try_from(value.len())
+			.or(Err(AgreementError::PayloadTooLong))?;
 
+		encoded.put(&session[..]);
 		encoded.put_u16(COOKIE ^ keys.cookie);
 		encoded.put_u8(length ^ keys.length);
 

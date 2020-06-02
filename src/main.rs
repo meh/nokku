@@ -16,6 +16,7 @@ use std::{time::{Duration, Instant}, net::{SocketAddr, IpAddr}, io, convert::Try
 use indicatif::{ProgressBar, ProgressStyle};
 use clap::Clap;
 use color_eyre::Result;
+use rand::{thread_rng, Rng};
 use thiserror::Error;
 use tracing;
 use socket::Socket;
@@ -63,6 +64,11 @@ enum Command {
 		/// Your private key.
 		#[clap(required = true, short = "p", long, env)]
 		private_key: String,
+
+		/// Whether to add padding packets or not; slows down the transfer but
+		/// makes it harder to find.
+		#[clap(long, env, parse(from_occurrences))]
+		padding: u8,
 
 		/// The host of the observer.
 		#[clap(env)]
@@ -113,10 +119,12 @@ fn main() -> Result<()> {
 					Err(err) if err.is::<ObserverError>() => {
 						match err.downcast_ref::<ObserverError>().unwrap() {
 							ObserverError::NonceReused => {
-								todo!("send a double reply to mark to retry");
+								tracing::error!("nonce reuse warning not yet implemented");
+								continue;
 							}
 
-							ObserverError::InvalidPacket =>
+							ObserverError::InvalidPacket |
+							ObserverError::StreamClosed =>
 								continue
 						}
 					}
@@ -128,24 +136,51 @@ fn main() -> Result<()> {
 			}
 		}
 
-		Command::Knock { interface, private_key, public_key, host, command } => {
+		Command::Knock { interface, private_key, public_key, padding, host, command } => {
 			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_RAW.into())?;
 			let addr: SocketAddr = (host, 0).into();
 			let knocker = Knocker::new(Agreement::new(&private_key, &public_key)?);
 			let mut packets = knocker.command(&command, host)?;
-			let progress = ProgressBar::new(packets.remaining().try_into()?)
-				.with_style(ProgressStyle::default_bar()
-					.template("[{elapsed_precise}] {bar:40.red/darkgray} {pos:>7}/{len:7}"));
+			let length = packets.remaining();
 
-			progress.println(format!("Sending ICMP packets to {}", addr.ip()));
+			// Send payload ICMP packets.
+			{
+				let progress = ProgressBar::new(length.try_into().unwrap())
+					.with_style(ProgressStyle::default_bar()
+						.template("[{elapsed_precise}] {bar:40.red/darkgray} {pos:>7}/{len:7}"));
 
-			while let Some(packet) = packets.next(SystemTime::now()) {
-				socket.send_to(&packet, &addr.into())?;
-				progress.inc(1);
-				thread::sleep(Duration::from_secs(1));
+				progress.println(format!("Sending ICMP packets to {}", addr.ip()));
+
+				while let Some(packet) = packets.next(SystemTime::now()) {
+					socket.send_to(&packet, &addr.into())?;
+					progress.inc(1);
+					thread::sleep(Duration::from_secs(1));
+				}
+
+				progress.finish_with_message("Done!");
+				length
+			};
+
+			// Send padding ICMP packets.
+			for _ in 0 .. padding {
+				let length = length % thread_rng().gen_range(0,
+					1 + ((50.0 * length as f32) / 100.0).ceil() as usize);
+
+				let progress = ProgressBar::new(length.try_into().unwrap())
+					.with_style(ProgressStyle::default_bar()
+						.template("[{elapsed_precise}] {bar:40.red/darkgray} {pos:>7}/{len:7}"));
+
+				println!();
+				progress.println(format!("Sending ICMP random padding to {}", addr.ip()));
+
+				for _ in 0 .. length {
+					socket.send_to(&packets.padding(SystemTime::now()), &addr.into())?;
+					progress.inc(1);
+					thread::sleep(Duration::from_secs(1));
+				}
+
+				progress.finish_with_message("Done!");
 			}
-
-			progress.finish_with_message("Done!");
 		}
 
 		Command::GenKey => {

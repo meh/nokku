@@ -1,6 +1,7 @@
 use std::{convert::TryFrom, net::IpAddr, time::{UNIX_EPOCH, SystemTime}, mem, ptr};
 use color_eyre::Result;
 use serde::Serialize;
+use bincode::Options;
 use packet::{ip::v4 as ip, Builder as _};
 use bytes::{Buf, Bytes, BytesMut, BufMut};
 use rand::{thread_rng, Rng};
@@ -18,19 +19,21 @@ impl Knocker {
 	pub fn packets<T>(&self, value: &T, to: IpAddr) -> Result<Packets>
 		where T: Serialize
 	{
+		let payload = bincode::DefaultOptions::new()
+			.with_limit(255)
+			.with_varint_encoding()
+			.serialize(value)?;
+
 		Ok(Packets {
 			to,
 			id: thread_rng().gen(),
 			seq: 0,
-			buffer: self.agreement.encode(Bytes::from(bincode::serialize(value)?))?
+			buffer: self.agreement.encode(Bytes::from(payload))?
 		})
 	}
 
 	pub fn command(&self, cmd: &Command, to: IpAddr) -> Result<Packets> {
-		match cmd {
-			Command::Open(cmd) =>
-				self.packets(&cmd, to),
-		}
+		self.packets(cmd, to)
 	}
 }
 
@@ -90,5 +93,48 @@ impl Packets {
 				unimplemented!("IPv6 is currently not supported");
 			}
 		}
+	}
+
+	pub fn padding(&mut self, at: SystemTime) -> Bytes {
+		match self.to {
+			IpAddr::V4(dest) => {
+				let duration = at.duration_since(UNIX_EPOCH).unwrap();
+
+				let now = libc::timeval {
+					tv_sec: i64::try_from(duration.as_secs()).unwrap(),
+					tv_usec: i64::from(duration.subsec_micros()),
+				};
+
+				let mut payload = BytesMut::new();
+				unsafe {
+					payload.resize(mem::size_of_val(&now), 0);
+					ptr::write_unaligned(payload.as_mut_ptr() as *mut _, now);
+				}
+
+				for i in 0x10 ..= 0x37 {
+					payload.put_u8(i);
+				}
+
+				let packet = ip::Builder::default()
+					.id(thread_rng().gen()).unwrap()
+					.ttl(64).unwrap()
+					.source([0, 0, 0, 0].into()).unwrap()
+					.destination(dest).unwrap()
+					.icmp().unwrap().echo().unwrap().request().unwrap()
+						.identifier(self.id).unwrap()
+						.sequence(self.seq).unwrap()
+						.payload(payload.iter()).unwrap()
+						.build().unwrap();
+
+				self.seq += 1;
+
+				Bytes::from(packet)
+			}
+
+			IpAddr::V6(_ip) => {
+				unimplemented!("IPv6 is currently not supported");
+			}
+		}
+
 	}
 }
