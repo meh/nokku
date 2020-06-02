@@ -25,7 +25,8 @@ Once the server is listening, on the client (again, as root), after saving the
 public key of the server, you can open a port for 10 minutes by doing:
 ```bash
 # In this example the server's public key is a file named `server.pub` and the
-# interface to send the packets through is `eth0`.
+# interface to send the packets through is `eth0` and the IP of the server is
+# `172.16.0.2`.
 nokku knock 172.16.0.2 -p nokku.priv -P server.pub -i eth0 \
   open --port 9001 --minutes 10
 ```
