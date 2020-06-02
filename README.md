@@ -1,23 +1,132 @@
 nokku
 =====
+Port knocking, without knocking ports, I guess.
+
+Setup
+-----
+First install it, `cargo install nokku` works, or find it with your package
+manager.
+
+Then on both sides create a Curve25519 keypair:
+```bash
+$ nokku gen-key | tee nokku.priv | nokku pub-key > nokku.pub
+```
+
+The on the server (as root) after sending the public key of the client:
+```bash
+# In this example the client's public key is a file named `client.pub` and the
+# interface to observe on is `eth0`.
+nokku observe -p nokku.priv -P client.pub -i eth0
+```
+
+Once the server is listening, on the client (again, as root), after sending the
+public key of the server, you can open a port for 10 minutes by doing:
+```bash
+# In this example the server's public key is a file named `server.pub` and the
+# interface to send the packets through is `eth0`.
+nokku knock -p nokku.priv -P server.pub -i eth0 \
+  open --port 9001 --minutes 10
+```
+
+Modes of operation
+==================
+`nokku` provides different modes of operation which offer a tradeoff between
+security/stealthiness and speed.
+
+Padding
+-------
+Since the number of packets `nokku` sends is always the same this can raise
+some eyebrows, by adding a randomly generated number of padding packets (that
+will be ignored) while it makes itself a little more visible by sending more
+packets, it also doesn't show any correlation between ICMP bursts.
+
+The following example will open the port and then send a random number of
+padding packets between 0 and 50% of the original payload.
+
+```bash
+nokku knock --padding \
+  -p nokku.priv -P server.pub -i eth0 \
+  open --port 9001 --minutes 10
+```
+
+If that's not enough and you feel frisky you can add more padding cycles:
+
+```bash
+nokku knock --padding --padding --padding --padding \
+  -p nokku.priv -P server.pub -i eth0 \
+  open --port 9001 --minutes 10
+```
+
+Interval
+--------
+The default interval follows the `ping` default, which is one packet per second,
+this means 16 bps of bandwidth, which isn't very good.
+
+Reducing the interval time increases the bandwidth, but it also risks getting
+filtered by firewalls, so use at your own peril.
+
+The interval is provided in milliseconds:
+```bash
+nokku knock --interval 250 \
+  -p nokku.priv -P server.pub -i eth0 \
+  open --port 9001 --minutes 10
+```
+
+The minimum interval is 200ms, packets sent within a shorter time frame are
+dropped to prevent flooding the observer.  Design
+
+Paranoid
+--------
+If you're very paranoid and do not mind waiting longer you can enable this mode
+which uses ephemeral-static ECDH to generate a (much bigger) nonce, to then
+proceed with the normal flow.
+
+Paranoid mode always enable at least one round of padding.
+
+```bash
+nokku knock --paranoid \
+  -p nokku.priv -P server.pub -i eth0 \
+  open --port 9001 --minutes 10
+```
 
 Design
-------
-X25119 is used for ECDH with static-static keys, this is done to avoid sending
-32 additional bytes, a paranoid mode is provided where the exchange is
-ephemeral-static ECDH, but it halves the transfer speed.
+======
+The design takes some inspiration from WireGuard when it comes to key
+management and primitives used, because they just do it right.
 
-Every message is prefixed with a 32 bits nonce, this must be unique for each
-private key.
+Confident
+---------
+This mode tries to be quick while being reasonably secure, in most cases this
+is enough.
 
-After the nonce the encrypted payload starts, on successful decryption the
-payload is composed of a 16 bits constant cookie to avoid bruteforcing or
-acting on garbage, an 8 bits `length` header, and then `length` bytes. At the
-end the Poly1305 MAC (which is 16 bytes).
+X25119 is used for static-static ECDH, every message is prefixed with a 32 bits
+nonce that must be unique for each private key. The nonce is used as salt for
+the HKDF (to add randomness to an otherwise constant key (the shared secret)).
 
-ChaCha20Poly1305 is used to encrypt and authenticate the payload, the key for this
-is derived with HKDF from the ECDH shared secret and the nonce.
+With HKDF 3 keys and a nonce are derived, one key is for the packet cookie, one
+for the packet length and the last key and nonce are for ChaCha20Poly1305.
 
-As stealth transport the ID header in IPv4 is used to stuff the fragmented
-payload and then send it with ICMP Echo Requests to make it look like someone
-just pinging a server.
+In the packet, after the nonce, there's an unsigned 16 bits integer that
+represents the cookie, this is XOR'd with the cookie key (2 bytes) taken from
+the HKDF, once XOR'd this cookie must be `0x1337` (obviously).
+
+After the cookie 1 unsigned byte represents the length of the payload, this
+byte is XOR'd with the length key (1 byte).
+
+After that there's `length` bytes with the encrypted payload followed by 16
+bytes of Poly1305 MAC. The nonce, cookie and length are authenticated by
+ChaCha20Poly1305.
+
+The final packet is fragmented into 2 bytes chunks and sent to the endpoint
+through ICMP Echo Requests emulating what `ping` would send and the IPv4 header
+ID field is used as transport.
+
+Paranoid
+--------
+This mode tries to be as secure as possible which leads it to being a lot
+slower.
+
+Every message is prefixed with an ephemeral public key (32 bytes) generated by
+the client, then X25519 is used with the static key of the endpoint and the
+shared secret is used as the nonce as in the confident flow, everything else is
+the same.
