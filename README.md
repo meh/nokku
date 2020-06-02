@@ -24,7 +24,7 @@ public key of the server, you can open a port for 10 minutes by doing:
 ```bash
 # In this example the server's public key is a file named `server.pub` and the
 # interface to send the packets through is `eth0`.
-nokku knock -p nokku.priv -P server.pub -i eth0 \
+nokku knock 172.16.0.2 -p nokku.priv -P server.pub -i eth0 \
   open --port 9001 --minutes 10
 ```
 
@@ -44,7 +44,7 @@ The following example will open the port and then send a random number of
 padding packets between 0 and 50% of the original payload.
 
 ```bash
-nokku knock --padding \
+nokku knock 172.16.0.2 --padding \
   -p nokku.priv -P server.pub -i eth0 \
   open --port 9001 --minutes 10
 ```
@@ -52,7 +52,7 @@ nokku knock --padding \
 If that's not enough and you feel frisky you can add more padding cycles:
 
 ```bash
-nokku knock --padding --padding --padding --padding \
+nokku knock 172.16.0.2 --padding --padding --padding --padding \
   -p nokku.priv -P server.pub -i eth0 \
   open --port 9001 --minutes 10
 ```
@@ -67,7 +67,7 @@ filtered by firewalls, so use at your own peril.
 
 The interval is provided in milliseconds:
 ```bash
-nokku knock --interval 250 \
+nokku knock 172.16.0.2 --interval 250 \
   -p nokku.priv -P server.pub -i eth0 \
   open --port 9001 --minutes 10
 ```
@@ -84,7 +84,7 @@ then proceed with the normal flow.
 Paranoid mode always enable at least one round of padding.
 
 ```bash
-nokku knock --paranoid \
+nokku knock 172.16.0.2 --paranoid \
   -p nokku.priv -P server.pub -i eth0 \
   open --port 9001 --minutes 10
 ```
