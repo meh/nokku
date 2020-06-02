@@ -12,7 +12,7 @@ Then on both sides create a Curve25519 keypair:
 $ nokku gen-key | tee nokku.priv | nokku pub-key > nokku.pub
 ```
 
-The on the server (as root) after sending the public key of the client:
+Then on the server (as root) after sending the public key of the client:
 ```bash
 # In this example the client's public key is a file named `client.pub` and the
 # interface to observe on is `eth0`.
@@ -37,8 +37,8 @@ Padding
 -------
 Since the number of packets `nokku` sends is always the same this can raise
 some eyebrows, by adding a randomly generated number of padding packets (that
-will be ignored) while it makes itself a little more visible by sending more
-packets, it also doesn't show any correlation between ICMP bursts.
+will be ignored) it can hide this behavior away, although more packets mean
+more eyebrows.
 
 The following example will open the port and then send a random number of
 padding packets between 0 and 50% of the original payload.
@@ -77,9 +77,9 @@ dropped to prevent flooding the observer.  Design
 
 Paranoid
 --------
-If you're very paranoid and do not mind waiting longer you can enable this mode
-which uses ephemeral-static ECDH to generate a (much bigger) nonce, to then
-proceed with the normal flow.
+If you're very paranoid and do not mind waiting longer, you can enable this
+mode, which uses ephemeral-static ECDH to generate a (much bigger) nonce, to
+then proceed with the normal flow.
 
 Paranoid mode always enable at least one round of padding.
 
