@@ -105,6 +105,7 @@ pub enum MainError {
 fn main() -> Result<()> {
 	tracing_subscriber::fmt::init();
 	color_backtrace::install();
+	dotenv::dotenv()?;
 	let args = Args::parse();
 
 	match args.command {
