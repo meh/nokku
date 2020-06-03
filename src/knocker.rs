@@ -5,7 +5,7 @@ use bincode::Options;
 use packet::{ip::v4 as ip, Builder as _};
 use bytes::{Buf, Bytes, BytesMut, BufMut};
 use rand::{thread_rng, Rng};
-use crate::{agreement::Agreement, command::*};
+use crate::{agreement::{Agreement, PeerId}, command::*};
 pub use crate::agreement::Mode;
 
 pub struct Knocker {
@@ -30,7 +30,7 @@ impl Knocker {
 			to,
 			id: thread_rng().gen(),
 			seq: 0,
-			buffer: self.agreement.encode(self.mode, Bytes::from(payload))?
+			buffer: self.agreement.encode(PeerId(0), self.mode, Bytes::from(payload))?
 		})
 	}
 

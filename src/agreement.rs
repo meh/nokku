@@ -26,14 +26,24 @@ use aead::{Aead, NewAead, generic_array::{GenericArray, typenum::{self as N, Uns
 
 pub struct Agreement {
 	pub me: StaticSecret,
-	pub peer: PublicKey,
-	pub secret: SharedSecret,
+	pub peers: Vec<Peer>,
 }
+
+pub struct Peer {
+	pub key: PublicKey,
+	pub shared: SharedSecret,
+}
+
+#[derive(Copy, Clone)]
+pub struct PeerId(pub usize);
 
 #[derive(Error, Debug)]
 pub enum AgreementError {
 	#[error("invalid cookie")]
 	InvalidCookie,
+
+	#[error("no valid known key")]
+	InvalidKey,
 
 	#[error("decryption failed")]
 	DecryptionFailed,
@@ -82,40 +92,45 @@ pub const MAX_HEADER_LENGTH: usize = PUBKEY_LENGTH + 2 + 1;
 pub const MAX_LENGTH: usize = MAX_HEADER_LENGTH + u8::MAX as usize + MAC_LENGTH;
 
 impl Agreement {
-	pub fn new(me: &str, peer: &str) -> Result<Self> {
+	pub fn new(me: &str, peers: impl Iterator<Item = impl AsRef<str>>) -> Result<Self> {
 		let me = if Path::new(me).exists() {
 			fs::read_to_string(me)?
 		}
 		else {
 			me.to_owned()
 		};
+		let me = base64::decode_config(me.trim(), base64::CRYPT)?;
+		let me: [u8; 32] = me.as_slice().try_into()?;
+		let me = StaticSecret::from(me);
 
-		let peer = if Path::new(peer).exists() {
-			fs::read_to_string(peer)?
-		}
-		else {
-			peer.to_owned()
-		};
+		let peers = peers.map(|peer| {
+			let peer = if Path::new(peer.as_ref()).exists() {
+				fs::read_to_string(peer.as_ref())?
+			}
+			else {
+				peer.as_ref().to_owned()
+			};
 
-		let private_key = base64::decode_config(me.trim(), base64::CRYPT)?;
-		let public_key = base64::decode_config(peer.trim(), base64::CRYPT)?;
+			let peer = base64::decode_config(peer.trim(), base64::CRYPT)?;
+			let peer: [u8; 32] = peer.as_slice().try_into()?;
+			let peer = PublicKey::from(peer);
+			let shared = me.diffie_hellman(&peer);
 
-		let private_key: [u8; 32] = private_key.as_slice().try_into()?;
-		let public_key: [u8; 32] = public_key.as_slice().try_into()?;
-		
-		let private_key = StaticSecret::from(private_key);
-		let public_key = PublicKey::from(public_key);
-		let secret = private_key.diffie_hellman(&public_key);
+			Ok(Peer {
+				key: PublicKey::from(peer),
+				shared,
+			})
+		}).collect::<Result<Vec<_>>>()?;
 
-		Ok(Self {
-			me: private_key,
-			peer: public_key,
-			secret,
-		})
+		Ok(Self { me, peers })
 	}
 
-	fn derive(&self, nonce: &[u8]) -> DerivedKeys {
-		let key = Hkdf::<Sha512>::extract(Some(nonce), self.secret.as_bytes()).0;
+	pub fn peer(&self, id: PeerId) -> &Peer {
+		&self.peers[id.0]
+	}
+
+	fn derive(&self, secret: &[u8], nonce: &[u8]) -> DerivedKeys {
+		let key = Hkdf::<Sha512>::extract(Some(nonce), secret).0;
 		let rest = key.as_slice();
 
 		let (mut cookie, rest) = rest.split_at(2);
@@ -131,54 +146,66 @@ impl Agreement {
 		}
 	}
 
-	pub fn decode(&self, mut buffer: Bytes) -> Result<Poll<(Payload, Bytes)>> {
+	pub fn decode(&self, buffer: Bytes) -> Result<Poll<(PeerId, Payload, Bytes)>> {
 		if buffer.len() < MIN_HEADER_LENGTH {
 			return Ok(Poll::Pending);
 		}
 
-		let session: [u8; 4] = buffer.split_to(4).as_ref().try_into().unwrap();
-		let mut session = Bytes::copy_from_slice(&session);
-		let mut keys = self.derive(&session[..]);
+		let mut status = None;
+		for (id, peer) in self.peers.iter().enumerate() {
+			let mut buffer = buffer.clone();
 
-		let cookie = buffer.get_u16() ^ keys.cookie;
-		if cookie != COOKIE {
-			if 6 + buffer.len() < MAX_HEADER_LENGTH {
-				return Ok(Poll::Pending);
-			}
-
-			let mut public = [0u8; 32];
-			(&mut public[..]).put(&session[..]);
-			(&mut public[4..]).put_u16(cookie ^ keys.cookie);
-			(&mut public[6..]).put(buffer.split_to(26));
-
-			let public = PublicKey::from(public);
-			let salt = self.me.diffie_hellman(&public);
-
-			session = Bytes::copy_from_slice(public.as_bytes());
-			keys = self.derive(salt.as_bytes());
+			let session: [u8; 4] = buffer.split_to(4).as_ref().try_into().unwrap();
+			let mut session = Bytes::copy_from_slice(&session);
+			let mut keys = self.derive(peer.shared.as_bytes(), &session[..]);
 
 			let cookie = buffer.get_u16() ^ keys.cookie;
 			if cookie != COOKIE {
-				Err(AgreementError::InvalidCookie)?
+				if 6 + buffer.len() < MAX_HEADER_LENGTH {
+					status = Some(Ok(Poll::Pending));
+					continue;
+				}
+
+				let mut public = [0u8; 32];
+				(&mut public[..]).put(&session[..]);
+				(&mut public[4..]).put_u16(cookie ^ keys.cookie);
+				(&mut public[6..]).put(buffer.split_to(26));
+
+				let public = PublicKey::from(public);
+				let salt = self.me.diffie_hellman(&public);
+
+				session = Bytes::copy_from_slice(public.as_bytes());
+				keys = self.derive(peer.shared.as_bytes(), salt.as_bytes());
+
+				let cookie = buffer.get_u16() ^ keys.cookie;
+				if cookie != COOKIE {
+					status = Some(Err(AgreementError::InvalidCookie));
+					continue;
+				}
 			}
+
+			let length = buffer.get_u8() ^ keys.length;
+			let needed = usize::from(length) + <ChaCha20Poly1305 as Aead>::TagSize::to_usize();
+
+			if buffer.len() < needed {
+				return Ok(Poll::Pending);
+			}
+
+			let rest      = buffer.split_off(needed);
+			let plaintext = Bytes::from(ChaCha20Poly1305::new(keys.aead)
+				.decrypt(&keys.nonce, aead::Payload { msg: buffer.as_ref(), aad: &session })
+				.or(Err(AgreementError::DecryptionFailed))?);
+
+			return Ok(Poll::Ready((PeerId(id), Payload { session, data: plaintext }, rest)))
 		}
 
-		let length = buffer.get_u8() ^ keys.length;
-		let needed = usize::from(length) + <ChaCha20Poly1305 as Aead>::TagSize::to_usize();
-
-		if buffer.len() < needed {
-			return Ok(Poll::Pending);
-		}
-
-		let rest      = buffer.split_off(needed);
-		let plaintext = Bytes::from(ChaCha20Poly1305::new(keys.aead)
-			.decrypt(&keys.nonce, aead::Payload { msg: buffer.as_ref(), aad: &session })
-			.or(Err(AgreementError::DecryptionFailed))?);
-
-		Ok(Poll::Ready((Payload { session, data: plaintext }, rest)))
+		status.unwrap_or(Err(AgreementError::InvalidKey))
+			.map_err(Into::into)
 	}
 
-	pub fn encode(&self, mode: Mode, value: Bytes) -> Result<Bytes> {
+	pub fn encode(&self, peer: PeerId, mode: Mode, value: Bytes) -> Result<Bytes> {
+		let peer = &self.peers[peer.0];
+
 		let (session, salt) = match mode {
 			Mode::Confident => {
 				let session: [u8; 4] = rand::thread_rng().gen();
@@ -190,14 +217,14 @@ impl Agreement {
 			Mode::Paranoid => {
 				let private = EphemeralSecret::new(&mut thread_rng());
 				let public = PublicKey::from(&private);
-				let salt = private.diffie_hellman(&self.peer);
+				let salt = private.diffie_hellman(&peer.key);
 
 				(Bytes::copy_from_slice(public.as_bytes()),
 				 Bytes::copy_from_slice(salt.as_bytes()))
 			}
 		};
 
-		let keys = self.derive(&salt);
+		let keys = self.derive(peer.shared.as_bytes(), &salt);
 		let length = u8::try_from(value.len())
 			.or(Err(AgreementError::PayloadTooLong))?;
 

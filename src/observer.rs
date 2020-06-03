@@ -216,14 +216,14 @@ impl Observer {
 			}
 
 			match self.agreement.decode(buffer.freeze()) {
-				Ok(Poll::Ready((payload, _))) => {
+				Ok(Poll::Ready((peer, payload, _))) => {
 					let decoded = bincode::DefaultOptions::new()
 						.with_limit(255)
 						.with_varint_encoding()
 						.deserialize(&payload.data)?;
 
 					// Check the nonce hasn't been used already.
-					let nonces = self.nonces.entry((&self.agreement.peer.as_bytes()[..]).try_into()?)
+					let nonces = self.nonces.entry((self.agreement.peer(peer).key.as_bytes()[..]).try_into()?)
 						.or_insert_with(|| CompressedBitmap::new(FilterSize::KeyBytes4));
 
 					if nonces.contains_hash(&payload.session) {

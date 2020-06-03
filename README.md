@@ -31,6 +31,16 @@ nokku knock 172.16.0.2 -p nokku.priv -P server.pub -i eth0 \
   open --port 9001 --minutes 10
 ```
 
+In case there are multiple clients who want to be served by the same observer
+just add their public keys:
+
+```bash
+# In this example there are 4 clients with different public keys, and it
+# observes on all interfaces.
+nokku observe -p nokku.priv \
+  -P client1.pub -P client2.pub -P client3.pub -P client4.pub 
+```
+
 Modes of operation
 ==================
 `nokku` provides different modes of operation which offer a tradeoff between

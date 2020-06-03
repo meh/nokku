@@ -43,13 +43,13 @@ enum Command {
 		#[clap(short, long)]
 		interface: Option<String>,
 
-		/// The public key of the client.
-		#[clap(required = true, short = "P", long, env)]
-		public_key: String,
-
 		/// The observer's private key.
 		#[clap(required = true, short = "p", long, env)]
 		private_key: String,
+
+		/// The public keys of the accepted clients.
+		#[clap(required = true, short = "P", long, env)]
+		public_key: Vec<String>,
 	},
 
 	/// Send a knock.
@@ -57,13 +57,13 @@ enum Command {
 		#[clap(short, long)]
 		interface: Option<String>,
 
-		/// The public key of the observer.
-		#[clap(required = true, short = "P", long, env)]
-		public_key: String,
-
 		/// Your private key.
 		#[clap(required = true, short = "p", long, env)]
 		private_key: String,
+
+		/// The public key of the observer.
+		#[clap(required = true, short = "P", long, env)]
+		public_key: String,
 
 		/// Whether to add padding packets or not; slows down the transfer but
 		/// makes it harder to find.
@@ -110,7 +110,7 @@ fn main() -> Result<()> {
 	match args.command {
 		Command::Observe { interface, private_key, public_key } => {
 			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_ICMP.into())?;
-			let mut observer = Observer::new(Agreement::new(&private_key, &public_key)?);
+			let mut observer = Observer::new(Agreement::new(&private_key, public_key.iter())?);
 
 			loop {
 				let mut buffer = [0u8; 1500];
@@ -152,7 +152,7 @@ fn main() -> Result<()> {
 			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_RAW.into())?;
 			let addr: SocketAddr = (host, 0).into();
 			let knocker = Knocker::new(if paranoid != 0 { Mode::Paranoid } else { Mode::Confident },
-				Agreement::new(&private_key, &public_key)?);
+				Agreement::new(&private_key, Some(public_key).iter())?);
 			let mut packets = knocker.command(&command, host)?;
 			let length = packets.remaining();
 
