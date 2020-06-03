@@ -207,11 +207,6 @@ impl Observer {
 		(&mut fragment[..]).put_u16(ip.id());
 		stream.push((ts, fragment));
 
-		if stream.len() * 2 < agreement::MIN_LENGTH {
-			tracing::trace!("need more data");
-			return Ok(Poll::Pending);
-		}
-
 		// Try to decode a message until it either works or more packets are
 		// needed.
 		loop {
@@ -220,7 +215,6 @@ impl Observer {
 				buffer.put(fragment.as_ref());
 			}
 
-			tracing::trace!("attempting decryption");
 			match self.agreement.decode(buffer.freeze()) {
 				Ok(Poll::Ready((payload, _))) => {
 					let decoded = bincode::DefaultOptions::new()
@@ -247,8 +241,8 @@ impl Observer {
 					break Ok(Poll::Pending);
 				}
 
-				Err(_) => {
-					tracing::trace!("evicting first packet");
+				Err(err) => {
+					tracing::trace!("evicting first packet because of {}", err);
 					stream.pop();
 				}
 			}

@@ -6,14 +6,16 @@ use packet::{ip::v4 as ip, Builder as _};
 use bytes::{Buf, Bytes, BytesMut, BufMut};
 use rand::{thread_rng, Rng};
 use crate::{agreement::Agreement, command::*};
+pub use crate::agreement::Mode;
 
 pub struct Knocker {
+	mode: Mode,
 	agreement: Agreement,
 }
 
 impl Knocker {
-	pub fn new(agreement: Agreement) -> Self {
-		Knocker { agreement }
+	pub fn new(mode: Mode, agreement: Agreement) -> Self {
+		Knocker { mode, agreement }
 	}
 
 	pub fn packets<T>(&self, value: &T, to: IpAddr) -> Result<Packets>
@@ -28,7 +30,7 @@ impl Knocker {
 			to,
 			id: thread_rng().gen(),
 			seq: 0,
-			buffer: self.agreement.encode(Bytes::from(payload))?
+			buffer: self.agreement.encode(self.mode, Bytes::from(payload))?
 		})
 	}
 
@@ -135,6 +137,5 @@ impl Packets {
 				unimplemented!("IPv6 is currently not supported");
 			}
 		}
-
 	}
 }

@@ -17,7 +17,7 @@ use color_eyre::Result;
 use base64;
 use rand::prelude::*;
 use thiserror::Error;
-use x25519::{StaticSecret, PublicKey, SharedSecret};
+use x25519::{StaticSecret, PublicKey, SharedSecret, EphemeralSecret};
 use hkdf::Hkdf;
 use sha2::Sha512;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -47,8 +47,20 @@ pub enum AgreementError {
 
 #[derive(Debug)]
 pub struct Payload {
-	pub session: [u8; 4],
+	pub session: Bytes,
 	pub data: Bytes,
+}
+
+#[derive(Eq, PartialEq, Copy, Clone, Debug)]
+pub enum Mode {
+	Confident,
+	Paranoid,
+}
+
+impl Default for Mode {
+	fn default() -> Self {
+		Self::Confident
+	}
 }
 
 #[derive(Debug)]
@@ -59,15 +71,15 @@ struct DerivedKeys {
 	nonce: GenericArray<u8, N::U12>,
 }
 
+pub const COOKIE: u16 = 0x1337;
+
 pub const NONCE_LENGTH: usize = 4;
 pub const PUBKEY_LENGTH: usize = 32;
-pub const HEADER_LENGTH: usize = 2 + 1;
 pub const MAC_LENGTH: usize = 16;
 
-pub const MIN_LENGTH: usize = NONCE_LENGTH + HEADER_LENGTH + MAC_LENGTH;
-pub const MAX_LENGTH: usize = PUBKEY_LENGTH + HEADER_LENGTH + MAC_LENGTH + u8::MAX as usize;
-
-pub const COOKIE: u16 = 0x1337;
+pub const MIN_HEADER_LENGTH: usize = NONCE_LENGTH + 2 + 1;
+pub const MAX_HEADER_LENGTH: usize = PUBKEY_LENGTH + 2 + 1;
+pub const MAX_LENGTH: usize = MAX_HEADER_LENGTH + u8::MAX as usize + MAC_LENGTH;
 
 impl Agreement {
 	pub fn new(me: &str, peer: &str) -> Result<Self> {
@@ -102,8 +114,8 @@ impl Agreement {
 		})
 	}
 
-	fn derive(&self, nonce: Option<&[u8]>) -> DerivedKeys {
-		let key = Hkdf::<Sha512>::extract(nonce, self.secret.as_bytes()).0;
+	fn derive(&self, nonce: &[u8]) -> DerivedKeys {
+		let key = Hkdf::<Sha512>::extract(Some(nonce), self.secret.as_bytes()).0;
 		let rest = key.as_slice();
 
 		let (mut cookie, rest) = rest.split_at(2);
@@ -120,16 +132,35 @@ impl Agreement {
 	}
 
 	pub fn decode(&self, mut buffer: Bytes) -> Result<Poll<(Payload, Bytes)>> {
-		if buffer.len() < MIN_LENGTH {
+		if buffer.len() < MIN_HEADER_LENGTH {
 			return Ok(Poll::Pending);
 		}
 
 		let session: [u8; 4] = buffer.split_to(4).as_ref().try_into().unwrap();
-		let keys = self.derive(Some(&session[..]));
+		let mut session = Bytes::copy_from_slice(&session);
+		let mut keys = self.derive(&session[..]);
 
 		let cookie = buffer.get_u16() ^ keys.cookie;
 		if cookie != COOKIE {
-			Err(AgreementError::InvalidCookie)?
+			if 6 + buffer.len() < MAX_HEADER_LENGTH {
+				return Ok(Poll::Pending);
+			}
+
+			let mut public = [0u8; 32];
+			(&mut public[..]).put(&session[..]);
+			(&mut public[4..]).put_u16(cookie ^ keys.cookie);
+			(&mut public[6..]).put(buffer.split_to(26));
+
+			let public = PublicKey::from(public);
+			let salt = self.me.diffie_hellman(&public);
+
+			session = Bytes::copy_from_slice(public.as_bytes());
+			keys = self.derive(salt.as_bytes());
+
+			let cookie = buffer.get_u16() ^ keys.cookie;
+			if cookie != COOKIE {
+				Err(AgreementError::InvalidCookie)?
+			}
 		}
 
 		let length = buffer.get_u8() ^ keys.length;
@@ -147,15 +178,30 @@ impl Agreement {
 		Ok(Poll::Ready((Payload { session, data: plaintext }, rest)))
 	}
 
-	pub fn encode(&self, value: Bytes) -> Result<Bytes> {
-		let mut encoded = BytesMut::new();
+	pub fn encode(&self, mode: Mode, value: Bytes) -> Result<Bytes> {
+		let (session, salt) = match mode {
+			Mode::Confident => {
+				let session: [u8; 4] = rand::thread_rng().gen();
 
-		let session: [u8; 4] = rand::thread_rng().gen();
-		let keys = self.derive(Some(&session[..]));
+				(Bytes::copy_from_slice(&session),
+				 Bytes::copy_from_slice(&session))
+			}
 
+			Mode::Paranoid => {
+				let private = EphemeralSecret::new(&mut thread_rng());
+				let public = PublicKey::from(&private);
+				let salt = private.diffie_hellman(&self.peer);
+
+				(Bytes::copy_from_slice(public.as_bytes()),
+				 Bytes::copy_from_slice(salt.as_bytes()))
+			}
+		};
+
+		let keys = self.derive(&salt);
 		let length = u8::try_from(value.len())
 			.or(Err(AgreementError::PayloadTooLong))?;
 
+		let mut encoded = BytesMut::new();
 		encoded.put(&session[..]);
 		encoded.put_u16(COOKIE ^ keys.cookie);
 		encoded.put_u8(length ^ keys.length);

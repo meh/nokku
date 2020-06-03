@@ -28,7 +28,7 @@ mod knocker;
 
 use agreement::Agreement;
 use observer::{Observer, ObserverError};
-use knocker::Knocker;
+use knocker::{Mode, Knocker};
 
 #[derive(Clap, Debug)]
 struct Args {
@@ -73,6 +73,10 @@ enum Command {
 		/// Number of milliseconds to wait between each packet.
 		#[clap(default_value = "1000", long, env)]
 		interval: u16,
+
+		/// Whether to enable paranoid mode or not.
+		#[clap(long, env, parse(from_occurrences))]
+		paranoid: u8,
 
 		/// The host of the observer.
 		#[clap(env)]
@@ -141,15 +145,20 @@ fn main() -> Result<()> {
 		}
 
 		Command::Knock {
-			interval, padding,
+			interval, mut padding, paranoid,
 			interface, private_key, public_key,
 			host, command
 		} => {
 			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_RAW.into())?;
 			let addr: SocketAddr = (host, 0).into();
-			let knocker = Knocker::new(Agreement::new(&private_key, &public_key)?);
+			let knocker = Knocker::new(if paranoid != 0 { Mode::Paranoid } else { Mode::Confident },
+				Agreement::new(&private_key, &public_key)?);
 			let mut packets = knocker.command(&command, host)?;
 			let length = packets.remaining();
+
+			if paranoid != 0 && padding == 0 {
+				padding = 1;
+			}
 
 			// Send payload ICMP packets.
 			{
@@ -171,7 +180,7 @@ fn main() -> Result<()> {
 
 			// Send padding ICMP packets.
 			for _ in 0 .. padding {
-				let length = length % thread_rng().gen_range(0,
+				let length = length % thread_rng().gen_range(1,
 					1 + ((50.0 * length as f32) / 100.0).ceil() as usize);
 
 				let progress = ProgressBar::new(length.try_into().unwrap())
