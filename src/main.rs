@@ -111,7 +111,7 @@ fn main() -> Result<()> {
 	match args.command {
 		Command::Observe { interface, private_key, public_key } => {
 			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_ICMP.into())?;
-			let mut observer = Observer::new(Agreement::new(&private_key, public_key.iter())?);
+			let mut observer = Observer::new(Agreement::new(&private_key, public_key)?);
 
 			loop {
 				let mut buffer = [0u8; 1500];

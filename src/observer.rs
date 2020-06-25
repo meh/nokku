@@ -56,7 +56,7 @@ impl Stream {
 		Self {
 			id, at,
 			closed: false,
-			packets: BoundedVecDeque::new(agreement::MAX_LENGTH / 2),
+			packets: BoundedVecDeque::new(agreement::len::MAX / 2),
 		}
 	}
 
@@ -105,7 +105,7 @@ impl Observer {
 
 	fn evict(&mut self) {
 		// 5 seconds maximum latency.
-		const TIMEOUT: u64 = (agreement::MAX_LENGTH as u64 / 2) * 5;
+		const TIMEOUT: u64 = (agreement::len::MAX as u64 / 2) * 5;
 
 		let mut expired_sessions = Vec::new();
 

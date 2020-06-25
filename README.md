@@ -121,14 +121,14 @@ for the packet length and the last key and nonce are for ChaCha20Poly1305.
 
 In the packet, after the nonce, there's an unsigned 16 bits integer that
 represents the cookie, this is XOR'd with the cookie key (2 bytes) taken from
-the HKDF, once XOR'd this cookie must be `0x1337` (obviously).
+the HKDF, once XOR'd back this cookie must be `0x1337` (obviously).
 
 After the cookie 1 unsigned byte represents the length of the payload, this
 byte is XOR'd with the length key (1 byte).
 
 After that there's `length` bytes with the encrypted payload followed by 16
 bytes of Poly1305 MAC. The nonce, cookie and length are authenticated by
-ChaCha20Poly1305.
+ChaCha20Poly1305 as additional authenticated data.
 
 The final packet is fragmented into 2 bytes chunks and sent to the endpoint
 through ICMP Echo Requests emulating what `ping` would send and the IPv4 header

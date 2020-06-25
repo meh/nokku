@@ -34,7 +34,7 @@ pub struct Peer {
 	pub shared: SharedSecret,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone, Debug)]
 pub struct PeerId(pub usize);
 
 #[derive(Error, Debug)]
@@ -83,16 +83,24 @@ struct DerivedKeys {
 
 pub const COOKIE: u16 = 0x1337;
 
-pub const NONCE_LENGTH: usize = 4;
-pub const PUBKEY_LENGTH: usize = 32;
-pub const MAC_LENGTH: usize = 16;
+pub mod len {
+	pub const SESSION: usize = 4;
+	pub const PUBKEY: usize = 32;
+	pub const COOKIE: usize = 2;
+	pub const LENGTH: usize = 1;
+	pub const MAC: usize = 16;
 
-pub const MIN_HEADER_LENGTH: usize = NONCE_LENGTH + 2 + 1;
-pub const MAX_HEADER_LENGTH: usize = PUBKEY_LENGTH + 2 + 1;
-pub const MAX_LENGTH: usize = MAX_HEADER_LENGTH + u8::MAX as usize + MAC_LENGTH;
+	pub const MIN_HEADER: usize = SESSION + 2 + 1;
+	pub const MAX_HEADER: usize = PUBKEY + 2 + 1;
+	pub const MAX: usize = MAX_HEADER + u8::MAX as usize + MAC;
+}
 
 impl Agreement {
-	pub fn new(me: &str, peers: impl Iterator<Item = impl AsRef<str>>) -> Result<Self> {
+	/// Create a new agreement with a private key and a set of public keys.
+	///
+	/// The private key will be used to encode and decode messages, and every
+	/// public key will be tried until a valid message is found.
+	pub fn new(me: &str, peers: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Self> {
 		let me = if Path::new(me).exists() {
 			fs::read_to_string(me)?
 		}
@@ -103,7 +111,7 @@ impl Agreement {
 		let me: [u8; 32] = me.as_slice().try_into()?;
 		let me = StaticSecret::from(me);
 
-		let peers = peers.map(|peer| {
+		let peers = peers.into_iter().map(|peer| {
 			let peer = if Path::new(peer.as_ref()).exists() {
 				fs::read_to_string(peer.as_ref())?
 			}
@@ -125,10 +133,12 @@ impl Agreement {
 		Ok(Self { me, peers })
 	}
 
+	/// Get a specific peer.
 	pub fn peer(&self, id: PeerId) -> &Peer {
 		&self.peers[id.0]
 	}
 
+	/// Derive keys from a shared secret and nonce.
 	fn derive(&self, secret: &[u8], nonce: &[u8]) -> DerivedKeys {
 		let key = Hkdf::<Sha512>::extract(Some(nonce), secret).0;
 		let rest = key.as_slice();
@@ -146,63 +156,66 @@ impl Agreement {
 		}
 	}
 
+	/// Decode a message.
 	pub fn decode(&self, buffer: Bytes) -> Result<Poll<(PeerId, Payload, Bytes)>> {
-		if buffer.len() < MIN_HEADER_LENGTH {
+		if buffer.len() < len::MIN_HEADER {
 			return Ok(Poll::Pending);
 		}
 
 		let mut status = None;
 		for (id, peer) in self.peers.iter().enumerate() {
-			let mut buffer = buffer.clone();
+			let mut rest = buffer.clone();
+			let mut header = rest.split_to(len::SESSION + len::COOKIE + len::LENGTH);
+			let mut authenticated = header.clone();
 
-			let session: [u8; 4] = buffer.split_to(4).as_ref().try_into().unwrap();
-			let mut session = Bytes::copy_from_slice(&session);
+			let mut session = header.split_to(len::SESSION);
 			let mut keys = self.derive(peer.shared.as_bytes(), &session[..]);
 
-			let cookie = buffer.get_u16() ^ keys.cookie;
+			let cookie = header.get_u16() ^ keys.cookie;
 			if cookie != COOKIE {
-				if 6 + buffer.len() < MAX_HEADER_LENGTH {
+				if buffer.len() < len::MAX_HEADER {
 					status = Some(Ok(Poll::Pending));
 					continue;
 				}
 
-				let mut public = [0u8; 32];
-				(&mut public[..]).put(&session[..]);
-				(&mut public[4..]).put_u16(cookie ^ keys.cookie);
-				(&mut public[6..]).put(buffer.split_to(26));
+				rest = buffer.clone();
+				header = rest.split_to(len::PUBKEY + len::COOKIE + len::LENGTH);
+				authenticated = header.clone();
 
+				let public: [u8; 32] = header.split_to(len::PUBKEY).as_ref().try_into().unwrap();
 				let public = PublicKey::from(public);
 				let salt = self.me.diffie_hellman(&public);
 
 				session = Bytes::copy_from_slice(public.as_bytes());
 				keys = self.derive(peer.shared.as_bytes(), salt.as_bytes());
 
-				let cookie = buffer.get_u16() ^ keys.cookie;
+				let cookie = header.get_u16() ^ keys.cookie;
 				if cookie != COOKIE {
 					status = Some(Err(AgreementError::InvalidCookie));
 					continue;
 				}
 			}
 
-			let length = buffer.get_u8() ^ keys.length;
+			let length = header.get_u8() ^ keys.length;
 			let needed = usize::from(length) + <ChaCha20Poly1305 as Aead>::TagSize::to_usize();
 
-			if buffer.len() < needed {
+			if rest.len() < needed {
 				return Ok(Poll::Pending);
 			}
 
-			let rest      = buffer.split_off(needed);
-			let plaintext = Bytes::from(ChaCha20Poly1305::new(keys.aead)
-				.decrypt(&keys.nonce, aead::Payload { msg: buffer.as_ref(), aad: &session })
+			let data  = rest.split_to(needed);
+			let data = Bytes::from(ChaCha20Poly1305::new(keys.aead)
+				.decrypt(&keys.nonce, aead::Payload { msg: data.as_ref(), aad: &authenticated })
 				.or(Err(AgreementError::DecryptionFailed))?);
 
-			return Ok(Poll::Ready((PeerId(id), Payload { session, data: plaintext }, rest)))
+			return Ok(Poll::Ready((PeerId(id), Payload { session, data }, rest)))
 		}
 
 		status.unwrap_or(Err(AgreementError::InvalidKey))
 			.map_err(Into::into)
 	}
 
+	/// Encode a message for a specific peer in a specific mode.
 	pub fn encode(&self, peer: PeerId, mode: Mode, value: Bytes) -> Result<Bytes> {
 		let peer = &self.peers[peer.0];
 
@@ -234,10 +247,95 @@ impl Agreement {
 		encoded.put_u8(length ^ keys.length);
 
 		encoded.put(ChaCha20Poly1305::new(keys.aead)
-			.encrypt(&keys.nonce, aead::Payload { msg: &value, aad: &session })
+			.encrypt(&keys.nonce, aead::Payload { msg: &value, aad: &encoded })
 			.or(Err(AgreementError::EncryptionFailed))?
 			.as_ref());
 
 		Ok(encoded.freeze())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn confident_roundtrip() {
+		let server = Agreement::new(include_str!("../tests/observer.priv"),
+			vec![include_str!("../tests/client.pub"), include_str!("../tests/client2.pub")]).unwrap();
+
+		let alice = Agreement::new(include_str!("../tests/client.priv"),
+			Some(include_str!("../tests/observer.pub"))).unwrap();
+
+		let bob = Agreement::new(include_str!("../tests/client2.priv"),
+			Some(include_str!("../tests/observer.pub"))).unwrap();
+
+		// Try message from Alice.
+		{
+			let encoded = alice.encode(PeerId(0), Mode::Confident, Bytes::from_static(b"foo")).unwrap();
+			let decoded = server.decode(encoded.clone()).unwrap();
+
+			if let Poll::Ready((peer, payload, _)) = decoded {
+				assert_eq!(PeerId(0), peer);
+				assert_eq!(b"foo", payload.data.as_ref());
+			}
+			else {
+				panic!("decoding didn't happen");
+			}
+		}
+
+		// Try message from Bob.
+		{
+			let encoded = bob.encode(PeerId(0), Mode::Confident, Bytes::from_static(b"foo")).unwrap();
+			let decoded = server.decode(encoded.clone()).unwrap();
+
+			if let Poll::Ready((peer, payload, _)) = decoded {
+				assert_eq!(PeerId(1), peer);
+				assert_eq!(b"foo", payload.data.as_ref());
+			}
+			else {
+				panic!("decoding didn't happen");
+			}
+		}
+	}
+
+	#[test]
+	fn paranoid_roundtrip() {
+		let server = Agreement::new(include_str!("../tests/observer.priv"),
+			vec![include_str!("../tests/client.pub"), include_str!("../tests/client2.pub")]).unwrap();
+
+		let alice = Agreement::new(include_str!("../tests/client.priv"),
+			Some(include_str!("../tests/observer.pub"))).unwrap();
+
+		let bob = Agreement::new(include_str!("../tests/client2.priv"),
+			Some(include_str!("../tests/observer.pub"))).unwrap();
+
+		// Try message from Alice.
+		{
+			let encoded = alice.encode(PeerId(0), Mode::Paranoid, Bytes::from_static(b"foo")).unwrap();
+			let decoded = server.decode(encoded.clone()).unwrap();
+
+			if let Poll::Ready((peer, payload, _)) = decoded {
+				assert_eq!(PeerId(0), peer);
+				assert_eq!(b"foo", payload.data.as_ref());
+			}
+			else {
+				panic!("decoding didn't happen");
+			}
+		}
+
+		// Try message from Bob.
+		{
+			let encoded = bob.encode(PeerId(0), Mode::Paranoid, Bytes::from_static(b"foo")).unwrap();
+			let decoded = server.decode(encoded.clone()).unwrap();
+
+			if let Poll::Ready((peer, payload, _)) = decoded {
+				assert_eq!(PeerId(1), peer);
+				assert_eq!(b"foo", payload.data.as_ref());
+			}
+			else {
+				panic!("decoding didn't happen");
+			}
+		}
 	}
 }
