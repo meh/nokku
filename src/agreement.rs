@@ -204,7 +204,7 @@ impl Agreement {
 			}
 
 			let data  = rest.split_to(needed);
-			let data = Bytes::from(ChaCha20Poly1305::new(keys.aead)
+			let data = Bytes::from(ChaCha20Poly1305::new(&keys.aead)
 				.decrypt(&keys.nonce, aead::Payload { msg: data.as_ref(), aad: &authenticated })
 				.or(Err(AgreementError::DecryptionFailed))?);
 
@@ -246,7 +246,7 @@ impl Agreement {
 		encoded.put_u16(COOKIE ^ keys.cookie);
 		encoded.put_u8(length ^ keys.length);
 
-		encoded.put(ChaCha20Poly1305::new(keys.aead)
+		encoded.put(ChaCha20Poly1305::new(&keys.aead)
 			.encrypt(&keys.nonce, aead::Payload { msg: &value, aad: &encoded })
 			.or(Err(AgreementError::EncryptionFailed))?
 			.as_ref());
