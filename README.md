@@ -4,12 +4,12 @@ Port knocking, without knocking ports, I guess.
 
 Setup
 -----
-First install it, `cargo install nokku` works, or find it with your package
-manager.
+First install it, `cargo install --git https://github.com/meh/nokku` works, or
+find it with your package manager.
 
 Then on both sides create a Curve25519 keypair:
 ```bash
-$ nokku gen-key | tee nokku.priv | nokku pub-key > nokku.pub
+nokku gen-key | tee nokku.priv | nokku pub-key > nokku.pub
 ```
 
 Examples
@@ -86,7 +86,7 @@ nokku knock 172.16.0.2 --interval 250 \
 ```
 
 The minimum interval is 200ms, packets sent within a shorter time frame are
-dropped to prevent flooding the observer.  Design
+dropped to prevent flooding the observer.
 
 Paranoid
 --------
