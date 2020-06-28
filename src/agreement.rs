@@ -216,7 +216,7 @@ impl Agreement {
 	}
 
 	/// Encode a message for a specific peer in a specific mode.
-	pub fn encode(&self, peer: PeerId, mode: Mode, value: Bytes) -> Result<Bytes> {
+	pub fn encode(&self, peer: PeerId, mode: Mode, value: Bytes) -> Result<BytesMut> {
 		let peer = &self.peers[peer.0];
 
 		let (session, salt) = match mode {
@@ -251,7 +251,7 @@ impl Agreement {
 			.or(Err(AgreementError::EncryptionFailed))?
 			.as_ref());
 
-		Ok(encoded.freeze())
+		Ok(encoded)
 	}
 }
 

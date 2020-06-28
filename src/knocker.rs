@@ -26,11 +26,16 @@ impl Knocker {
 			.with_varint_encoding()
 			.serialize(value)?;
 
+		let mut buffer = self.agreement.encode(PeerId(0), self.mode, Bytes::from(payload))?;
+		if buffer.len() % 2 != 0 {
+			buffer.put_u8(thread_rng().gen());
+		}
+
 		Ok(Packets {
 			to,
 			id: thread_rng().gen(),
 			seq: 0,
-			buffer: self.agreement.encode(PeerId(0), self.mode, Bytes::from(payload))?
+			buffer: buffer.freeze(),
 		})
 	}
 
