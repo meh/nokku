@@ -30,6 +30,7 @@ bincode = { version = "1", git = "https://github.com/servo/bincode" }
 bytes = { version = "0.5", features = ["serde"] }
 base64 = "0.12"
 bounded-vec-deque = "0.1"
+shellexpand = "2"
 
 rand = "0.7"
 twox-hash = "1"

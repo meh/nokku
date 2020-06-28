@@ -17,8 +17,10 @@ Examples
 On the server (as root) after saving the public key of the client:
 ```bash
 # In this example the client's public key is a file named `client.pub` and the
-# interface to observe on is `eth0`.
-nokku observe -p nokku.priv -P client.pub -i eth0
+# interface to observe on is `eth0` and the firewall being used is nftables.
+nokku observe -p nokku.priv -P client.pub -i eth0 \
+  --open 'nft -a -e add inet FIREWALL INCOMING tcp dport $PORT ct state new accept | sed -e "s/^.*# handle //"' \
+  --close 'nft delete rule inet FIREWALL INCOMING handle $HANDLE'
 ```
 
 Once the server is listening, on the client (again, as root), after saving the

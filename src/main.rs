@@ -44,12 +44,18 @@ enum Command {
 		interface: Option<String>,
 
 		/// The observer's private key.
-		#[clap(required = true, short = "p", long, env)]
+		#[clap(required = true, short = 'p', long, env)]
 		private_key: String,
 
 		/// The public keys of the accepted clients.
-		#[clap(required = true, short = "P", long, env)]
+		#[clap(required = true, short = 'P', long, env)]
 		public_key: Vec<String>,
+
+		#[clap(required = true, long, env)]
+		open: String,
+
+		#[clap(required = true, long, env)]
+		close: String,
 	},
 
 	/// Send a knock.
@@ -58,11 +64,11 @@ enum Command {
 		interface: Option<String>,
 
 		/// Your private key.
-		#[clap(required = true, short = "p", long, env)]
+		#[clap(required = true, short = 'p', long, env)]
 		private_key: String,
 
 		/// The public key of the observer.
-		#[clap(required = true, short = "P", long, env)]
+		#[clap(required = true, short = 'P', long, env)]
 		public_key: String,
 
 		/// Whether to add padding packets or not; slows down the transfer but
@@ -105,13 +111,17 @@ pub enum MainError {
 fn main() -> Result<()> {
 	tracing_subscriber::fmt::init();
 	color_backtrace::install();
-	dotenv::dotenv()?;
+	dotenv::dotenv().ok();
 	let args = Args::parse();
 
 	match args.command {
-		Command::Observe { interface, private_key, public_key } => {
+		Command::Observe {
+			interface, private_key, public_key,
+			open, close
+		} => {
 			let socket = socket(interface.as_ref().map(AsRef::as_ref), libc::IPPROTO_ICMP.into())?;
 			let mut observer = Observer::new(Agreement::new(&private_key, public_key)?);
+			let mut handler = command::Handler::new(open, close);
 
 			loop {
 				let mut buffer = [0u8; 1500];
@@ -122,7 +132,9 @@ fn main() -> Result<()> {
 					Ok(Poll::Pending) => (),
 
 					Ok(Poll::Ready(request)) => {
-						tracing::debug!(?request);
+						if let Err(err) = handler.handle(request) {
+							tracing::error!(?err);
+						}
 					}
 
 					Err(err) if err.is::<ObserverError>() => {
