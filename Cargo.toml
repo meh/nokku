@@ -8,7 +8,7 @@ authors = ["meh. <meh@schizofreni.co>"]
 
 [dependencies]
 dotenv = "0.15"
-clap = { git = "https://github.com/clap-rs/clap" }
+clap = "3.0.0-beta.1"
 
 thiserror = "1"
 color-eyre = "0.4"
@@ -26,7 +26,7 @@ get_if_addrs = "0.5"
 libc = "0.2"
 
 serde = { version = "1", features = ["derive"] }
-bincode = { version = "1", git = "https://github.com/servo/bincode" }
+bincode = "1"
 bytes = { version = "0.5", features = ["serde"] }
 base64 = "0.12"
 bounded-vec-deque = "0.1"

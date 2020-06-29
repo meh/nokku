@@ -92,7 +92,7 @@ pub mod len {
 
 	pub const MIN_HEADER: usize = SESSION + 2 + 1;
 	pub const MAX_HEADER: usize = PUBKEY + 2 + 1;
-	pub const MAX: usize = MAX_HEADER + u8::MAX as usize + MAC;
+	pub const MAX: usize = MAX_HEADER + std::u8::MAX as usize + MAC;
 }
 
 impl Agreement {
@@ -273,7 +273,7 @@ mod tests {
 		// Try message from Alice.
 		{
 			let encoded = alice.encode(PeerId(0), Mode::Confident, Bytes::from_static(b"foo")).unwrap();
-			let decoded = server.decode(encoded.clone()).unwrap();
+			let decoded = server.decode(encoded.freeze()).unwrap();
 
 			if let Poll::Ready((peer, payload, _)) = decoded {
 				assert_eq!(PeerId(0), peer);
@@ -287,7 +287,7 @@ mod tests {
 		// Try message from Bob.
 		{
 			let encoded = bob.encode(PeerId(0), Mode::Confident, Bytes::from_static(b"foo")).unwrap();
-			let decoded = server.decode(encoded.clone()).unwrap();
+			let decoded = server.decode(encoded.freeze()).unwrap();
 
 			if let Poll::Ready((peer, payload, _)) = decoded {
 				assert_eq!(PeerId(1), peer);
@@ -313,7 +313,7 @@ mod tests {
 		// Try message from Alice.
 		{
 			let encoded = alice.encode(PeerId(0), Mode::Paranoid, Bytes::from_static(b"foo")).unwrap();
-			let decoded = server.decode(encoded.clone()).unwrap();
+			let decoded = server.decode(encoded.freeze()).unwrap();
 
 			if let Poll::Ready((peer, payload, _)) = decoded {
 				assert_eq!(PeerId(0), peer);
@@ -327,7 +327,7 @@ mod tests {
 		// Try message from Bob.
 		{
 			let encoded = bob.encode(PeerId(0), Mode::Paranoid, Bytes::from_static(b"foo")).unwrap();
-			let decoded = server.decode(encoded.clone()).unwrap();
+			let decoded = server.decode(encoded.freeze()).unwrap();
 
 			if let Poll::Ready((peer, payload, _)) = decoded {
 				assert_eq!(PeerId(1), peer);

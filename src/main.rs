@@ -44,11 +44,11 @@ enum Command {
 		interface: Option<String>,
 
 		/// The observer's private key.
-		#[clap(required = true, short = 'p', long, env)]
+		#[clap(required = true, short = "p", long, env)]
 		private_key: String,
 
 		/// The public keys of the accepted clients.
-		#[clap(required = true, short = 'P', long, env)]
+		#[clap(required = true, short = "P", long, env)]
 		public_key: Vec<String>,
 
 		#[clap(required = true, long, env)]
@@ -64,11 +64,11 @@ enum Command {
 		interface: Option<String>,
 
 		/// Your private key.
-		#[clap(required = true, short = 'p', long, env)]
+		#[clap(required = true, short = "p", long, env)]
 		private_key: String,
 
 		/// The public key of the observer.
-		#[clap(required = true, short = 'P', long, env)]
+		#[clap(required = true, short = "P", long, env)]
 		public_key: String,
 
 		/// Whether to add padding packets or not; slows down the transfer but
